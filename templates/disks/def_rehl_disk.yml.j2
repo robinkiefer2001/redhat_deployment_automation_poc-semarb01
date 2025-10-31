@@ -1,0 +1,9 @@
+# templates/def_rehl_disk.yml
+disk:
+  - type: thin
+    datastore: "{{ vcenter_datastore }}"
+    controller_type: paravirtual
+    unit_number: 0
+    controller_number: 0
+    size_gb: {{ guest_disk_size | default(32)}}
+    disk_mode: independent_persistent

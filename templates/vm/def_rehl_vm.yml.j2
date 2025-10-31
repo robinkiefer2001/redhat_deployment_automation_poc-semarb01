@@ -1,0 +1,14 @@
+vm:
+  name:        "{{ vm_name }}"
+  folder:      "{{ vm_folder }}"
+  datacenter:  "{{ datacenter_name }}"
+  cluster:     "{{ cluster_name }}"
+  state:       poweredon
+  guest_id:    rhel9_64Guest
+
+  hardware:
+    memory_mb: {{ memory_mb | default(2048) }}
+    num_cpus:  {{ num_cpus  | default(2)  }}
+
+  wait_for_ip_address:         {{ wait_for_ip | default(false) }}
+  wait_for_ip_address_timeout: 600

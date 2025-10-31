@@ -1,0 +1,27 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - vmware.vmware_rest
+
+  vars_files:
+    - "{{ credentials_vault }}"
+
+  tasks:
+    - name: Alle Datacenter via REST abrufen
+      vmware.vmware_rest.vcenter_datacenter_info:
+        vcenter_hostname:     "{{ vcenter_host }}"
+        vcenter_username:     "{{ vcenter_user }}"
+        vcenter_password:     "{{ vcenter_pw }}"
+        vcenter_validate_certs: false
+      register: dc_info
+
+    - name: Debug komplette Struktur von dc_info anzeigen
+      debug:
+        var: dc_info
+
+    - name: Datacenter-Namen ausgeben
+      debug:
+        msg: "{{ item.name }}"
+      loop: "{{ dc_info.value }}"

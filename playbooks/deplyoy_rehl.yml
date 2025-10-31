@@ -1,0 +1,246 @@
+---
+# playbooks/deploy_rehl
+# ============================================
+# Playbook zur Provisionierung einer RHEL-VM
+# inkl. Image-Build über Red Hat API, Konfig-Rendering,
+# Upload zur vSphere Umgebung und VM-Erstellung
+# ============================================
+
+- name: RHEL-VM Provisionierung inkl. Image-Build, Konfigurations-Rendering und Bereitstellung in vSphere
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  # Anmeldedaten und Secrets werden aus einem verschlüsselten Vault geladen
+  vars_files:
+    - "{{ credentials_vault }}"
+
+  vars:
+    validate_certs: false
+    vm_name: new-vm
+    disk_size: "32G"
+    datacenter_name: "ffntec - dc0"
+    cluster_name: "ffntec-cl301"
+    vm_folder: "vm/FFNTec/RKI-Nested-ESXi/VMs"
+    network_name: "DSwitch01-cl301-frontend-Management Network"
+    vlan_id: "0"
+    vcenter_datastore: "vsanDatastore"
+    snmp_string: ""
+    packages:
+      - "net-snmp"
+    services_enabled:
+      - "sshd"
+      - "snmpd.service"
+      - "custom-first-boot"
+    ntpservers:
+      - "0.ch.pool.ntp.org"
+      - "1.ch.pool.ntp.org"
+    status_query: "image_status.status"
+
+  # Standardwerte für VMware-Module definieren, um Redundanz zu vermeiden
+  module_defaults:
+    community.vmware.vmware_guest:
+      hostname: "{{ vcenter_host }}"
+      username: "{{ vcenter_user }}"
+      password: "{{ vcenter_pw }}"
+      validate_certs: "{{ validate_certs }}"
+    community.vmware.vmware_guest_disk:
+      hostname: "{{ vcenter_host }}"
+      username: "{{ vcenter_user }}"
+      password: "{{ vcenter_pw }}"
+      validate_certs: "{{ validate_certs }}"
+    community.vmware.vmware_guest_network:
+      hostname: "{{ vcenter_host }}"
+      username: "{{ vcenter_user }}"
+      password: "{{ vcenter_pw }}"
+      validate_certs: "{{ validate_certs }}"
+    community.vmware.vsphere_copy:
+      hostname: "{{ vcenter_host }}"
+      username: "{{ vcenter_user }}"
+      password: "{{ vcenter_pw }}"
+      validate_certs: "{{ validate_certs }}"
+
+  tasks:
+    # Generiert einen eindeutigen Zeitstempel zur Dateibenennung
+    - name: Initialisierung: Timestamp zur eindeutigen Benennung generieren
+      set_fact:
+        compose_timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+    # Erstellt ein lokales Arbeitsverzeichnis für temporäre Dateien der aktuellen VM
+    - name: Vorbereitung: Verzeichnis für Konfigurationsdateien erstellen
+      file:
+        path: "{{ project_dir }}/config_store/{{ vm_name }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+
+    # Generiert die Grundkonfiguration der VM über Jinja2-Template
+    - name: VM-Konfiguration rendern
+      template:
+        src: "../templates/vm/def_rehl_vm.yml.j2"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/vm_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+
+    # Lädt die VM-Konfiguration als Variablen
+    - name: VM-Konfiguration laden
+      include_vars:
+        file: "{{ project_dir }}/config_store/{{ vm_name }}/vm_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+        name: vm_cfg
+
+    # Erstellt die Disk-Konfiguration über Template
+    - name: Disk-Template rendern
+      template:
+        src: "../templates/disks/def_rehl_disk.yml.j2"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/disk_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+
+    # Lädt Disk-Konfiguration in Variablen
+    - name: Disk-Konfiguration laden
+      include_vars:
+        file: "{{ project_dir }}/config_store/{{ vm_name }}/disk_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+        name: disk_cfg
+
+    # Erstellt die Konfiguration für die CD-ROM-Einbindung
+    - name: CD-ROM-Template rendern
+      template:
+        src: "../templates/cdrom/def_cdrom.yml.j2"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/cdrom_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+
+    # Lädt CD-ROM-Konfiguration
+    - name: CD-ROM-Konfiguration laden
+      include_vars:
+        file: "{{ project_dir }}/config_store/{{ vm_name }}/cdrom_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+        name: cdrom_cfg
+
+    # Erstellt die Netzwerkkonfiguration über Template
+    - name: NIC-Template rendern
+      template:
+        src: "../templates/network/def_general_nic.yml.j2"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/nic_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+
+    # Lädt Netzwerkkonfiguration
+    - name: NIC-Konfiguration laden
+      include_vars:
+        file: "{{ project_dir }}/config_store/{{ vm_name }}/nic_config_{{ vm_name }}_{{ compose_timestamp }}.yml"
+        name: nic_cfg
+
+    # Rendert ein benutzerdefiniertes Firstboot-Skript, das z. B. SSH, Zeitzone und Insights konfiguriert
+    - name: Firstboot-Skript rendern
+      template:
+        src: "../templates/firstboot_script/def_rehl_firstboot.sh.j2"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/firstboot_config_{{ vm_name }}_{{ compose_timestamp }}.sh"
+
+    # Kodiert das Firstboot-Skript in Base64, um es via API in die VM einzubetten
+    - name: Firstboot-Skript als Base64 kodieren
+      shell: >-
+        base64 -w0 "{{ project_dir }}/config_store/{{ vm_name }}/firstboot_config_{{ vm_name }}_{{ compose_timestamp }}.sh"
+        > "{{ project_dir }}/config_store/{{ vm_name }}/firstboot_config_{{ vm_name }}_{{ compose_timestamp }}.b64"
+      args:
+        executable: /bin/bash
+
+    # Lädt das kodierte Skript in eine Ansible-Variable
+    - name: Kodiertes Skript in Variable laden
+      set_fact:
+        firstboot_base64: "{{ lookup('file', project_dir + '/config_store/' + vm_name + '/firstboot_config_' + vm_name + '_' + compose_timestamp + '.b64') }}"
+
+    # Fordert ein Zugriffstoken für die Red Hat Image Builder API an
+    - name: API-Zugriff: Token für Red Hat API abrufen
+      include_tasks: get_rehlapi_token.yml
+
+    # Führt ein lokales Skript aus, das ein sicheres Benutzerpasswort generiert und dessen Hash extrahiert
+    - name: Passwort-Hash für Benutzer generieren
+      command: sh ../scripts/create_user_pw.sh
+      environment:
+        HASH_FILE: "{{ project_dir }}/config_store/{{ vm_name }}/{{ vm_name }}_hashed_pass.txt"
+        PASS_FILE: "{{ project_dir }}/config_store/{{ vm_name }}/{{ vm_name }}_user_pass.txt"
+      register: password_hash_result
+      become: yes
+
+    # Speichert den Passwort-Hash in einer Ansible-Variable für die spätere Verwendung im Compose-Request
+    - name: Passwort-Hash setzen
+      set_fact:
+        password_hash: "{{ password_hash_result.stdout }}"
+
+    # Rendert den vollständigen Compose-Request zur Erstellung des Images
+    - name: Compose-Request Template rendern
+      template:
+        src: "../templates/rehl_api/def_rehl_compose.yml.j2"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/rehl_compose_{{ vm_name }}_{{ compose_timestamp }}.yml"
+
+    # Lädt die gerenderte Compose-Konfiguration als Variable
+    - name: Compose-Request laden
+      include_vars:
+        file: "{{ project_dir }}/config_store/{{ vm_name }}/rehl_compose_{{ vm_name }}_{{ compose_timestamp }}.yml"
+        name: compose_request
+
+    # Sendet den Compose-Request an die Image Builder API
+    - name: Compose-Request an Image Builder API senden
+      uri:
+        url: "https://console.redhat.com/api/image-builder/v1/compose"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ redhat_token.json.access_token }}"
+          Content-Type: "application/json"
+        body: "{{ compose_request | to_json }}"
+        return_content: yes
+        status_code: 201
+      register: compose_response
+
+    # Extrahiert die eindeutige Compose-ID aus der Antwort
+    - name: Compose-ID speichern
+      set_fact:
+        compose_id: "{{ compose_response.json.id }}"
+
+    # Führt ein Bash-Skript aus, das regelmäßig den Status des Builds prüft
+    - name: Build-Status per Bash-Skript prüfen
+      command: sh ../scripts/check_image_status.sh
+      environment:
+        svc_rehl_api_client_id: "{{ svc_rehl_api_client_id }}"
+        svc_rehl_api_client_secret: "{{ svc_rehl_api_client_secret }}"
+        COMPOSE_ID: "{{ compose_id }}"
+      register: download_url
+      become: yes
+
+    # Gibt den Rückgabewert des Status-Skripts aus (inkl. möglicher Download-URL)
+    - name: Rückgabe des Skripts anzeigen
+      debug:
+        var: download_url
+
+    # Filtert die Download-URL aus der Ausgabezeile heraus
+    - name: Download-Link extrahieren
+      set_fact:
+        iso_url: "{{ download_url.stdout_lines | select('search', '^https://') | list | first }}"
+
+    # Lädt das erzeugte ISO-Image lokal herunter
+    - name: ISO-Image herunterladen
+      get_url:
+        url: "{{ iso_url }}"
+        dest: "{{ project_dir }}/config_store/{{ vm_name }}/{{ vm_name }}.iso"
+        mode: '0644'
+      delegate_to: localhost
+
+    # Kopiert das ISO-Image auf den vSphere-Datastore
+    - name: ISO in Datastore hochladen
+      community.vmware.vsphere_copy:
+        src: "{{ project_dir }}/config_store/{{ vm_name }}/{{ vm_name }}.iso"
+        datacenter: "{{ datacenter_name }}"
+        datastore: "{{ vcenter_datastore }}"
+        path: "templates/{{ vm_name }}/{{ vm_name }}.iso"
+        timeout: 600
+      delegate_to: localhost
+
+    # Erstellt die VM mit Disk, NIC, CD-ROM auf der Zielumgebung
+    - name: VM in vSphere bereitstellen
+      community.vmware.vmware_guest:
+        name: "{{ vm_cfg.vm.name }}"
+        folder: "{{ vm_cfg.vm.folder }}"
+        datacenter: "{{ vm_cfg.vm.datacenter }}"
+        cluster: "{{ vm_cfg.vm.cluster }}"
+        state: "{{ vm_cfg.vm.state }}"
+        guest_id: "{{ vm_cfg.vm.guest_id }}"
+        hardware: "{{ vm_cfg.vm.hardware }}"
+        wait_for_ip_address: "{{ vm_cfg.vm.wait_for_ip_address }}"
+        wait_for_ip_address_timeout: "{{ vm_cfg.vm.wait_for_ip_address_timeout }}"
+        disk: "{{ disk_cfg.disk }}"
+        cdrom: "{{ cdrom_cfg.cdrom }}"
+        networks: "{{ nic_cfg.networks }}"
+      delegate_to: localhost
+      register: created_vm

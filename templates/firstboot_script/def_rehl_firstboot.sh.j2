@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# SSH Konfiguration
+cat <<EOF > /etc/ssh/sshd_config
+PermitRootLogin no
+ClientAliveInterval 300
+ClientAliveCountMax 3
+UseDNS no
+EOF
+
+# Berechtigungen anpassen
+chmod 644 /etc/ssh/sshd_config
+chown root:root /etc/ssh/sshd_config
+
+# Hostname setzen
+hostnamectl set-hostname "{{ vm_name }}"
+
+# Disable Cloud init
+touch /etc/cloud/cloud-init.disabled
+
+# Insights Client konfigurieren
+echo "group: '{{ customer_id | default('99999') }}'" > /etc/insights-client/tags.yaml
+insights-client --register
+systemctl restart insights-client
+
+# Cockpit entfernen + Firewallregel
+dnf remove -y cockpit*
+firewall-cmd --remove-service=cockpit --permanent || true
+
+# Bootparameter anpassen
+grubby --info=ALL
+grubby --update-kernel=ALL --remove-args="rhgb quiet"
+
+# Tuned-Profil setzen
+tuned-adm active
+tuned-adm profile virtual-guest
+
+# Journald persistent aktivieren
+mkdir -p /var/log/journal
+systemctl --signal=USR1 kill systemd-journald.service
+
+# SSH neustarten
+systemctl restart sshd
+
+# enable snmp service
+sudo systemctl enable snmpd.service

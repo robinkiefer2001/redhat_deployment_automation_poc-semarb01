@@ -1,0 +1,78 @@
+client_id: "api"
+customizations:
+  files:
+    - path: "/usr/local/sbin/custom-first-boot"
+      mode: "0775"
+      data: "{{ firstboot_base64 }}"
+      data_encoding: "base64"
+      ensure_parents: true
+    - path: "/etc/systemd/system/custom-first-boot.service"
+      mode: "0644"
+      data: |
+        [Unit]
+        Description=Custom First Boot Script
+        After=network-online.target cloud-init.target
+        Wants=network-online.target
+    
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/custom-first-boot
+        RemainAfterExit=yes
+        StandardOutput=journal+console
+        StandardError=journal+console
+    
+        [Install]
+        WantedBy=multi-user.target
+      data_encoding: plain
+      ensure_parents: true
+  hostname: "{{ vm_name }}"
+  locale:
+    keyboard: "ch-de_nodeadkeys"
+    languages:
+      - "en_US.UTF-8"
+  timezone:
+    timezone: "Europe/Zurich"
+    ntpservers:
+{% for ntp in ntpservers %}
+      - "{{ ntp }}"
+{% endfor %}
+  packages:
+{% for package in packages %}
+      - "{{ package }}"
+{% endfor %}
+  users:
+    - name: "tux"
+      groups:
+        - "wheel"
+      hasPassword: true
+      password: "{{ password_hash }}"
+  services:
+    enabled:
+{% for svc in services_enabled %}
+      - "{{ svc }}"
+{% endfor %}
+{% if services_disabled is defined and services_disabled %}
+    disabled:
+{% for svc in services_disabled %}
+      - "{{ svc }}"
+{% endfor %}
+{% endif %}
+  subscription:
+    enabled: true
+    activation-key: "education"
+    base-url: "https://cdn.redhat.com/"
+    insights: true
+    organization: 17592706
+    rhc: true
+    server-url: "subscription.rhsm.redhat.com"
+  installer:
+    unattended: true
+distribution: "{{ distribution | default('rhel-9') }}"
+image_name: "{{ image_name | default('compose-image_' + vm_name) }}"
+image_description: "image für übergabe an Vsphere"
+image_requests:
+  - architecture: "x86_64"
+    image_type: "image-installer"
+    upload_request:
+      type: "aws.s3"
+      options: {}

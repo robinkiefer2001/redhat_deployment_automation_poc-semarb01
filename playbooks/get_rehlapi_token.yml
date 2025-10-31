@@ -1,0 +1,10 @@
+- name: Token von Red Hat holen
+  uri:
+    url: "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+    method: POST
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    body: "grant_type=client_credentials&client_id={{ svc_rehl_api_client_id }}&client_secret={{ svc_rehl_api_client_secret }}"
+    body_format: form-urlencoded
+    return_content: yes
+  register: redhat_token
